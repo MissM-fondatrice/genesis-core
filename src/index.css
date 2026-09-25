@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    /* Miss Danford & Genesis Color Palette */
+    --color-bg-primary: #0b0c10;
+    --color-bg-surface: #121319;
+    --color-bg-elevated: #171922;
+    --color-bg-satin: #1d202b;
+
+    /* Ivory & Cream Tones */
+    --color-ivory: #fcfaf6;
+    --color-cream: #f4efe6;
+    --color-cream-muted: #e5ded3;
+    --color-taupe: #a09587;
+    --color-warm-beige: #c9bea9;
+
+    /* Miss Danford Signature Red */
+    --color-danford-red: #981c2e;
+    --color-danford-burgundy: #6e121e;
+    --color-danford-rose-glow: rgba(152, 28, 46, 0.25);
+
+    /* Subtle Sage Green (Muted & Natural) */
+    --color-sage-dark: #1b2f25;
+    --color-sage-accent: #3d6e55;
+    --color-sage-light: #86b29b;
+  }
+
+  body {
+    background-color: var(--color-bg-primary);
+    color: var(--color-cream);
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    letter-spacing: -0.01em;
+  }
+
+  /* Refined typography helpers */
+  .font-editorial {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+  }
+
+  .font-brand {
+    font-family: 'Cinzel', serif;
+  }
+
+  .font-sans {
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+
+  /* Custom subtle scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0b0c10;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #252833;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #353949;
+  }
+}
