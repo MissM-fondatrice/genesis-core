@@ -257,5 +257,12 @@ export const api = {
     const res = await fetch('/api/tests/status');
     if (!res.ok) throw new Error('Failed to get test status');
     return res.json();
+  },
+
+  // GENESIS AI PROVIDER GATEWAY v0.1 — key-free status listing only.
+  async getAIProviders(): Promise<import('../types/genesis.js').AIProviderStatusView[]> {
+    const res = await fetch('/api/ai/providers');
+    if (!res.ok) throw new Error('Failed to fetch AI provider status');
+    return res.json();
   }
 };
