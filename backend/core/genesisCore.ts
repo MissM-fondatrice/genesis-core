@@ -1,3 +1,4 @@
+
 /**
  * GENESIS CORE v0.1
  * 
@@ -573,4 +574,226 @@ export class GenesisCore {
     }
   }
 
-  // ===========================
+  // =========================================================================
+  // Mission Control overrides (Suspend / Cancel by Miss M)
+  // =========================================================================
+  public suspendMission(missionId: string, reason: string): Mission {
+    const missM = this.identityService.getPrimaryHuman();
+    const mission = this.missionService.updateStatus(missionId, 'SUSPENDED', reason);
+
+    this.auditService.recordEvent({
+      actorId: missM.id,
+      actorName: missM.name,
+      actorType: missM.type,
+      eventType: 'MISSION_SUSPENDED',
+      missionId,
+      missionTitle: mission.title,
+      action: 'SUSPEND_MISSION',
+      context: { reason },
+      result: `Mission suspended by Miss M.`,
+      permissionUsed: 'SUSPEND_MISSION',
+      authorizationRequired: false,
+      simulated: false
+    });
+
+    return mission;
+  }
+
+  public cancelMission(missionId: string, reason: string): Mission {
+    const missM = this.identityService.getPrimaryHuman();
+    const mission = this.missionService.updateStatus(missionId, 'CANCELLED', reason);
+
+    this.auditService.recordEvent({
+      actorId: missM.id,
+      actorName: missM.name,
+      actorType: missM.type,
+      eventType: 'MISSION_CANCELLED',
+      missionId,
+      missionTitle: mission.title,
+      action: 'CANCEL_MISSION',
+      context: { reason },
+      result: `Mission cancelled by Miss M.`,
+      permissionUsed: 'CANCEL_MISSION',
+      authorizationRequired: false,
+      simulated: false
+    });
+
+    return mission;
+  }
+
+  // =========================================================================
+  // MISSION ROUTING
+  // =========================================================================
+  public routeMission(missionId: string): {
+    mission: Mission;
+    routedAgent: import('../../src/types/genesis.js').Identity;
+    matchReason: string;
+    confidence: number;
+  } {
+    const mission = this.missionService.getMissionById(missionId);
+    if (!mission) {
+      throw new Error(`Mission ${missionId} not found.`);
+    }
+
+    const { agent, confidence, matchReason } = this.agentService.findBestAgentForMission({
+      title: mission.title,
+      description: mission.description,
+      domain: mission.context?.domain,
+      territory: mission.context?.territory as string,
+      establishment: mission.context?.establishment as string
+    });
+
+    const updatedMission = this.assignMission(mission.id, agent.id);
+
+    return {
+      mission: updatedMission,
+      routedAgent: agent,
+      matchReason,
+      confidence
+    };
+  }
+
+  // =========================================================================
+  // INTER-AGENT INTELLIGENCE EXCHANGE
+  // =========================================================================
+  public collaborateInterAgent(input: {
+    fromAgentId: string;
+    toAgentId: string;
+    missionId?: string;
+    requestSummary: string;
+  }): import('../../src/types/genesis.js').InterAgentMessage {
+    const exchange = this.agentService.executeInterAgentExchange(input);
+
+    const fromAgent = this.identityService.getIdentityById(input.fromAgentId);
+    const toAgent = this.identityService.getIdentityById(input.toAgentId);
+    const mission = input.missionId ? this.missionService.getMissionById(input.missionId) : undefined;
+
+    // Record traceable audit event for inter-agent communication
+    this.auditService.recordEvent({
+      actorId: fromAgent?.id || input.fromAgentId,
+      actorName: fromAgent?.name || 'Agent',
+      actorType: 'AGENT',
+      eventType: 'INTER_AGENT_COMMUNICATION',
+      missionId: input.missionId,
+      missionTitle: mission?.title,
+      action: 'EXCHANGE_INTELLIGENCE',
+      context: {
+        toAgentId: toAgent?.id,
+        toAgentName: toAgent?.name,
+        requestSummary: input.requestSummary,
+        transferredDataScope: 'STRICT_NEED_TO_KNOW'
+      },
+      result: `Inter-agent intelligence routed via Core: ${fromAgent?.name} consulted ${toAgent?.name}. Filtered information delivered.`,
+      authorizationRequired: false,
+      simulated: true,
+      metadata: {
+        filteredResponse: exchange.filteredResponse
+      }
+    });
+
+    return exchange;
+  }
+
+  // =========================================================================
+  // GENESIS AI PROVIDER GATEWAY v0.1
+  // =========================================================================
+
+  /**
+   * Public, key-free status of all AI providers, for Miss M's visibility
+   * (section 21). Never exposes API keys or secrets.
+   */
+  public getAIProvidersStatus(): ProviderInfo[] {
+    return this.aiGateway.getProvidersStatus();
+  }
+
+  /**
+   * GENESIS CORE ⇄ GENESIS AI GATEWAY BRIDGE
+   *
+   * Thin delegation only — all validation, permission evaluation, audit and
+   * validation-request logic lives in gatewayActionBridge.ts and reuses the
+   * exact same, unmodified services processMissionAnalysis already relies
+   * on. This method changes nothing about existing behavior; it only gives
+   * an external AI capability a governed entry point into it.
+   */
+  public submitGatewayProposedAction(dto: GatewayActionSubmissionDTO): GatewayActionSubmissionResult {
+    try {
+      return submitGatewayProposedAction(
+        {
+          identityService: this.identityService,
+          permissionService: this.permissionService,
+          missionService: this.missionService,
+          validationService: this.validationService,
+          auditService: this.auditService
+        },
+        dto
+      );
+    } catch (err: unknown) {
+      const rejectionCode = (err as { rejectionCode?: 'MISSION_NOT_FOUND' | 'AGENT_MISMATCH' | 'INVALID_ACTION_TYPE' })
+        ?.rejectionCode;
+
+      // Only AGENT_MISMATCH and INVALID_ACTION_TYPE occur once a mission was
+      // found, so only those can return a populated GatewayActionSubmissionResult.
+      // MISSION_NOT_FOUND has no mission object to return: it is re-thrown so
+      // the route can answer with a plain 404, exactly like every other
+      // missionId lookup in this file (e.g. processMissionAnalysis).
+      if (rejectionCode === 'AGENT_MISMATCH' || rejectionCode === 'INVALID_ACTION_TYPE') {
+        const mission = this.missionService.getMissionById(dto.missionId);
+        if (mission) {
+          return {
+            mission,
+            requiresHuman: false,
+            rejected: {
+              code: rejectionCode,
+              reason: err instanceof Error ? err.message : String(err)
+            }
+          };
+        }
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Best-effort advisory enrichment of a mission's analysis via the AI
+   * Provider Gateway. Deliberately isolated from the deterministic analysis
+   * flow: any failure (no provider configured, timeout, permission denial)
+   * is caught here and simply skipped — it must never corrupt or block the
+   * mission lifecycle (section 19: "Une panne IA ne doit pas supprimer ou
+   * corrompre l'état d'une mission.").
+   */
+  private async enrichAnalysisWithAI(
+    agent: import('../../src/types/genesis.js').Identity,
+    mission: Mission,
+    analysisResult: NonNullable<Mission['analysisResult']>
+  ): Promise<void> {
+    try {
+      const aiResponse = await this.aiGateway.generate({
+        actor: agent,
+        action: 'ANALYZE_COMPANY',
+        mission,
+        taskType: 'MISSION_ANALYSIS_ENRICHMENT',
+        objective: `Fournir un avis consultatif complémentaire (non décisionnel) sur la mission "${mission.title}".`,
+        messages: [
+          {
+            role: 'user',
+            content: `Résumé de mission (filtré) : ${analysisResult.summary}. Recommandation actuelle : ${analysisResult.commercialRecommendation}`
+          }
+        ],
+        sensitivityLevel: 'INTERNAL'
+      });
+
+      analysisResult.aiAdvisory = {
+        provider: aiResponse.provider,
+        model: aiResponse.model,
+        text: aiResponse.response,
+        simulated: aiResponse.simulated,
+        requestId: aiResponse.requestId,
+        warnings: aiResponse.warnings,
+        provenance: 'ESTIMATED'
+      };
+    } catch {
+      // No provider available/authorized for this enrichment step.
+      // The deterministic Genesis analysis above remains fully valid on its own.
+    }
+  }
+}
