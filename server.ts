@@ -116,6 +116,23 @@ async function bootstrap() {
     });
   });
 
+  // GENESIS AI PROVIDER GATEWAY v0.1 — dedicated test suite
+  app.get('/api/tests/ai-gateway', async (_req: Request, res: Response) => {
+    try {
+      const { runAIGatewayTests, runAIGatewayAsyncTests } = await import('./backend/tests/aiGatewayTests.js');
+      const syncReport = runAIGatewayTests(core);
+      const asyncReport = await runAIGatewayAsyncTests(core);
+      res.json({
+        syncReport,
+        asyncReport,
+        allPassed: syncReport.allPassed && asyncReport.allPassed
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: msg });
+    }
+  });
+
   // Scenario Test Runner (Scenarios 1 through 6)
   app.get('/api/scenarios', (_req: Request, res: Response) => {
     try {
@@ -237,9 +254,9 @@ async function bootstrap() {
   });
 
   // Step 3 & 4: Trigger Agent Analysis & Proposal & Permission Check
-  app.post('/api/missions/:id/analyze', (req: Request, res: Response) => {
+  app.post('/api/missions/:id/analyze', async (req: Request, res: Response) => {
     try {
-      const result = core.processMissionAnalysis(req.params.id);
+      const result = await core.processMissionAnalysis(req.params.id);
       res.json(result);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -295,6 +312,11 @@ async function bootstrap() {
     }
   });
 
+  // AI Provider Gateway — key-free status listing for Miss M (section 21)
+  app.get('/api/ai/providers', (_req: Request, res: Response) => {
+    res.json(core.getAIProvidersStatus());
+  });
+
   // Audit Events
   app.get('/api/events', (req: Request, res: Response) => {
     const limit = Number(req.query.limit) || 100;
@@ -307,7 +329,7 @@ async function bootstrap() {
   });
 
   // Demo step runner endpoint for the 11-step sequence
-  app.post('/api/demo/run-step', (req: Request, res: Response) => {
+  app.post('/api/demo/run-step', async (req: Request, res: Response) => {
     try {
       const { step, missionId } = req.body;
       const targetMissionId = missionId || 'msn_demo_restauration_01';
@@ -324,7 +346,7 @@ async function bootstrap() {
           res.json({ step: 2, mission, message: 'Assigned to Miss Danford' });
           break;
         case 3: // Analyze + Propose + Permission check
-          const analysisRes = core.processMissionAnalysis(targetMissionId);
+          const analysisRes = await core.processMissionAnalysis(targetMissionId);
           res.json({
             step: 3,
             mission: analysisRes.mission,
