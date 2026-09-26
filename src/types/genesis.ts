@@ -91,7 +91,9 @@ export type EventType =
   | 'AI_REQUEST_SENT'
   | 'AI_RESPONSE_RECEIVED'
   | 'AI_PROVIDER_FALLBACK'
-  | 'AI_TOOL_CALL_BLOCKED';
+  | 'AI_TOOL_CALL_BLOCKED'
+  // Genesis Core ⇄ Genesis AI Gateway bridge (external action-proposal submission)
+  | 'GATEWAY_ACTION_SUBMITTED';
 
 export interface AgentActivityRecord {
   id: string;
@@ -301,80 +303,4 @@ export interface GenesisNotification {
   requiresAcknowledgement: boolean;
   missionId?: string;
   validationId?: string;
-  agentId?: string;
-}
-
-export interface AgentRecommendation {
-  agent: Identity;
-  suitabilityScore: number;
-  reasons: string[];
-  isAuthorized: boolean;
-  currentWorkload: number;
-}
-
-/**
- * GENESIS AI PROVIDER GATEWAY v0.1 — frontend-facing, key-free provider
- * status shape (mirrors backend/core/ai/aiTypes.ts ProviderInfo). Kept as a
- * separate, minimal declaration so the frontend bundle never imports
- * backend-only adapter code or provider SDKs.
- */
-export interface AIProviderStatusView {
-  providerId: 'gemini' | 'claude' | 'openai' | 'simulated';
-  name: string;
-  status: 'AVAILABLE' | 'NOT_CONFIGURED' | 'UNAVAILABLE' | 'DISABLED' | 'SIMULATED';
-  models: string[];
-  capabilities: string[];
-  simulationMode: boolean;
-  lastCheckedAt: string;
-  restrictions: string[];
-}
-
-export interface ScenarioTestResult {
-  id: number;
-  name: string;
-  passed: boolean;
-  description: string;
-  evidence: Record<string, unknown>;
-  timestamp: string;
-}
-
-export interface CoreStatus {
-  version: string;
-  name: string;
-  status: 'OPERATIONAL' | 'DEGRADED' | 'MAINTENANCE';
-  simulationModeActive: boolean;
-  humanAuthority: {
-    primaryHolder: string;
-    role: string;
-    level: string;
-    isEnforced: boolean;
-  };
-  services: {
-    orchestration: boolean;
-    identity: boolean;
-    permissions: boolean;
-    missions: boolean;
-    agents: boolean;
-    validations: boolean;
-    audit: boolean;
-    data: boolean;
-    notifications: boolean;
-  };
-  stats: {
-    totalMissions: number;
-    activeMissions: number;
-    pendingValidations: number;
-    totalEvents: number;
-    totalAgents: number;
-    simulatedActionsCount: number;
-    unreadNotifications: number;
-    securityEventsCount: number;
-  };
-  constitutionalPrinciples: string[];
-  systemHealth: {
-    doctrineAdherence: string;
-    humanSupremacyLock: boolean;
-    sandboxIntegrity: boolean;
-    auditIntegrity: boolean;
-  };
-}
+  agentId?
