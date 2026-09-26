@@ -30,6 +30,8 @@ import { AuditService } from '../services/auditService.js';
 import { GenesisScenarioRunner } from '../tests/genesisScenarios.js';
 import { AIGateway } from './ai/aiGateway.js';
 import { ProviderInfo } from './ai/aiTypes.js';
+import { submitGatewayProposedAction } from './gateway/gatewayActionBridge.js';
+import { GatewayActionSubmissionDTO, GatewayActionSubmissionResult } from '../../src/types/gatewayContract.js';
 
 export class GenesisCore {
   private static instance: GenesisCore;
@@ -194,3 +196,381 @@ export class GenesisCore {
     });
 
     // Run Agent Analysis logic (deterministic Genesis engine — unchanged, always the source of truth)
+    const { analysisResult, proposedAction } = this.agentService.analyzeMission(mission);
+
+    // Optional, best-effort AI Provider Gateway enrichment (section 3: an AI may only
+    // propose/advise — it never decides). Never blocks or alters the deterministic
+    // analysis/proposal above; a provider outage cannot corrupt mission state.
+    await this.enrichAnalysisWithAI(agent, mission, analysisResult);
+
+    // Step 5: Genesis checks proposed action permissions in full context
+    const permEval = this.permissionService.evaluatePermission({
+      actor: agent,
+      action: proposedAction.actionType,
+      mission,
+      proposedPayload: proposedAction.payload
+    });
+
+    // Record permission check in audit
+    this.auditService.recordEvent({
+      actorId: 'sys_core',
+      actorName: 'Genesis Governance Engine',
+      actorType: 'CORE_SYSTEM',
+      eventType: 'PERMISSION_CHECKED',
+      missionId: mission.id,
+      missionTitle: mission.title,
+      action: 'PERMISSION_EVALUATION',
+      context: {
+        checkedPermission: proposedAction.actionType,
+        targetAgent: agent.name,
+        evaluationReason: permEval.reason,
+        requiresHumanValidation: permEval.requiresHumanValidation
+      },
+      result: permEval.requiresHumanValidation
+        ? `HUMAN VALIDATION MANDATORY for action '${proposedAction.actionType}'. Agent cannot self-authorize.`
+        : `Autonomous execution permitted.`,
+      permissionUsed: proposedAction.actionType,
+      authorizationRequired: permEval.requiresHumanValidation,
+      authorizationStatus: 'PENDING',
+      simulated: false
+    });
+
+    // Store analysis & proposal on mission
+    this.missionService.setAnalysisAndProposal(missionId, analysisResult, proposedAction);
+
+    // Record Action Proposed event
+    this.auditService.recordEvent({
+      actorId: agent.id,
+      actorName: agent.name,
+      actorType: agent.type,
+      eventType: 'ACTION_PROPOSED',
+      missionId: mission.id,
+      missionTitle: mission.title,
+      action: proposedAction.actionType,
+      context: {
+        proposedActionName: proposedAction.name,
+        target: proposedAction.target,
+        rationale: proposedAction.rationale,
+        isSimulated: proposedAction.isSimulated
+      },
+      result: `${agent.name} formulated proposal: ${proposedAction.name}`,
+      permissionUsed: proposedAction.actionType,
+      authorizationRequired: permEval.requiresHumanValidation,
+      simulated: proposedAction.isSimulated
+    });
+
+    // If human validation is required (e.g. CONTACT_COMPANY):
+    if (permEval.requiresHumanValidation) {
+      const validationRequest = this.validationService.createValidationRequest(
+        mission,
+        agent,
+        proposedAction
+      );
+
+      const updatedMission = this.missionService.attachValidationRequest(missionId, validationRequest.id);
+
+      this.auditService.recordEvent({
+        actorId: 'sys_core',
+        actorName: 'Genesis Core Router',
+        actorType: 'CORE_SYSTEM',
+        eventType: 'VALIDATION_REQUESTED',
+        missionId: mission.id,
+        missionTitle: mission.title,
+        action: 'CREATE_VALIDATION_REQUEST',
+        context: {
+          validationId: validationRequest.id,
+          recipient: 'Miss M (Final Human Authority)',
+          proposedAction: proposedAction.name
+        },
+        result: `Formal authorization ticket dispatched to Miss M. Operational pause enforced.`,
+        authorizationRequired: true,
+        authorizationStatus: 'PENDING',
+        simulated: true
+      });
+
+      return {
+        mission: updatedMission,
+        validationRequest,
+        requiresHuman: true
+      };
+    }
+
+    return {
+      mission,
+      requiresHuman: false
+    };
+  }
+
+  // =========================================================================
+  // CORE STEP 6 & 7: Human Decision by Miss M (Authorize, Refuse, More Info, Suspend)
+  // =========================================================================
+  public processHumanDecision(
+    validationId: string,
+    decision: 'AUTHORIZE' | 'REFUSE' | 'REQUEST_MORE_INFO' | 'SUSPEND',
+    note?: string
+  ): {
+    validation: ValidationRequest;
+    mission: Mission;
+    executionResult?: unknown;
+  } {
+    const val = this.validationService.getValidation(validationId);
+    if (!val) {
+      throw new Error(`Validation ticket ${validationId} not found.`);
+    }
+
+    const mission = this.missionService.getMissionById(val.missionId);
+    if (!mission) {
+      throw new Error(`Associated mission ${val.missionId} not found.`);
+    }
+
+    const missM = this.identityService.getPrimaryHuman();
+
+    if (decision === 'AUTHORIZE') {
+      // 1. Authorize ticket
+      const updatedVal = this.validationService.authorize(validationId, missM.name, note);
+
+      // 2. Audit Authorization
+      this.auditService.recordEvent({
+        actorId: missM.id,
+        actorName: missM.name,
+        actorType: missM.type,
+        eventType: 'ACTION_AUTHORIZED',
+        missionId: mission.id,
+        missionTitle: mission.title,
+        action: 'APPROVE_ACTION',
+        context: {
+          validationId,
+          approvedAction: val.proposedAction.name,
+          decisionNote: note || 'Autorisé formellement par Miss M'
+        },
+        result: `Miss M authorized action '${val.proposedAction.name}'. Proceeding to safe simulated execution.`,
+        permissionUsed: 'APPROVE_ACTION',
+        authorizationRequired: true,
+        authorizationStatus: 'AUTHORIZED',
+        simulated: false
+      });
+
+      // 3. Execute SIMULATED ACTION
+      const executionResult = this.agentService.executeSimulatedAction(mission, val.proposedAction);
+
+      // 4. Record Simulated Action Executed Audit Event
+      this.auditService.recordEvent({
+        actorId: 'sys_core',
+        actorName: 'Genesis Simulated Execution Sandbox',
+        actorType: 'CORE_SYSTEM',
+        eventType: 'SIMULATED_ACTION_EXECUTED',
+        missionId: mission.id,
+        missionTitle: mission.title,
+        action: val.proposedAction.actionType,
+        context: {
+          target: executionResult.target,
+          summary: executionResult.summary,
+          disclaimer: executionResult.disclaimer,
+          payload: executionResult.details
+        },
+        result: executionResult.summary,
+        permissionUsed: val.proposedAction.actionType,
+        authorizationRequired: true,
+        authorizationStatus: 'AUTHORIZED',
+        simulated: true
+      });
+
+      // 5. Complete Mission
+      const completedMission = this.missionService.completeMissionWithResult(mission.id, executionResult);
+
+      this.auditService.recordEvent({
+        actorId: 'sys_core',
+        actorName: 'Genesis Core Engine',
+        actorType: 'CORE_SYSTEM',
+        eventType: 'MISSION_COMPLETED',
+        missionId: mission.id,
+        missionTitle: mission.title,
+        action: 'COMPLETE_MISSION',
+        context: {
+          finalStatus: 'DONE',
+          totalLifecycleTime: 'Complete cycle executed with full human supervision.'
+        },
+        result: `Mission '${mission.title}' successfully completed under authorized mandate.`,
+        authorizationRequired: false,
+        simulated: true
+      });
+
+      return {
+        validation: updatedVal,
+        mission: completedMission,
+        executionResult
+      };
+    } else if (decision === 'REFUSE') {
+      const updatedVal = this.validationService.refuse(validationId, missM.name, note);
+
+      this.auditService.recordEvent({
+        actorId: missM.id,
+        actorName: missM.name,
+        actorType: missM.type,
+        eventType: 'ACTION_REFUSED',
+        missionId: mission.id,
+        missionTitle: mission.title,
+        action: 'REFUSE_ACTION',
+        context: {
+          validationId,
+          refusedAction: val.proposedAction.name,
+          refusalReason: note || 'Refusé par Miss M'
+        },
+        result: `Miss M exercised executive human veto. Action execution halted.`,
+        permissionUsed: 'REFUSE_ACTION',
+        authorizationRequired: true,
+        authorizationStatus: 'REFUSED',
+        simulated: false
+      });
+
+      const blockedMission = this.missionService.updateStatus(
+        mission.id,
+        'BLOCKED',
+        `Action refusée par l'autorité humaine Miss M : ${note || 'Aucun motif spécifié'}`,
+        'Miss M'
+      );
+
+      return {
+        validation: updatedVal,
+        mission: blockedMission
+      };
+    } else if (decision === 'SUSPEND') {
+      const updatedVal = this.validationService.suspend(validationId, missM.name, note);
+
+      this.auditService.recordEvent({
+        actorId: missM.id,
+        actorName: missM.name,
+        actorType: missM.type,
+        eventType: 'MISSION_SUSPENDED',
+        missionId: mission.id,
+        missionTitle: mission.title,
+        action: 'SUSPEND_MISSION',
+        context: {
+          validationId,
+          suspendedAction: val.proposedAction.name,
+          suspensionReason: note || 'Dossier suspendu temporairement par Miss M'
+        },
+        result: `Mandat suspendu par décision de Miss M.`,
+        permissionUsed: 'SUSPEND_MISSION',
+        authorizationRequired: true,
+        authorizationStatus: 'AUTHORIZED',
+        simulated: false
+      });
+
+      const suspendedMission = this.missionService.suspendMission(
+        mission.id,
+        note || 'Mandat suspendu par Miss M depuis le centre de décision',
+        'Miss M'
+      );
+
+      return {
+        validation: updatedVal,
+        mission: suspendedMission
+      };
+    } else {
+      // REQUEST_MORE_INFO
+      const updatedVal = this.validationService.requestMoreInfo(validationId, missM.name, note || 'Complément demandé');
+
+      this.auditService.recordEvent({
+        actorId: missM.id,
+        actorName: missM.name,
+        actorType: missM.type,
+        eventType: 'MORE_INFO_REQUESTED',
+        missionId: mission.id,
+        missionTitle: mission.title,
+        action: 'REQUEST_MORE_INFORMATION',
+        context: {
+          validationId,
+          inquiry: note
+        },
+        result: `Miss M requested additional clarification before authorization.`,
+        authorizationRequired: true,
+        authorizationStatus: 'PENDING',
+        simulated: false
+      });
+
+      const updatedMission = this.missionService.updateStatus(
+        mission.id,
+        'WAITING',
+        `En attente de compléments d'analyse suite à la demande de Miss M: ${note}`,
+        'Miss M'
+      );
+
+      return {
+        validation: updatedVal,
+        mission: updatedMission
+      };
+    }
+  }
+
+  // =========================================================================
+  // PERMISSION MANAGEMENT BY MISS M
+  // =========================================================================
+  public modifyAgentPermission(
+    agentId: string,
+    permission: Permission,
+    newStatus: PermissionStatus,
+    scope: string,
+    callerId: string
+  ): import('../../src/types/genesis.js').Identity {
+    return this.permissionService.modifyAgentPermission(agentId, permission, newStatus, scope, callerId);
+  }
+
+  // =========================================================================
+  // MULTI-CRITERIA AGENT RECOMMENDATIONS
+  // =========================================================================
+  public getRecommendationsForMission(criteria: {
+    title: string;
+    description: string;
+    domain?: string;
+    territory?: string;
+    establishment?: string;
+    requiredPermissions?: Permission[];
+  }): AgentRecommendation[] {
+    return this.agentService.getRecommendationsForMission(criteria);
+  }
+
+  // =========================================================================
+  // NOTIFICATION CENTER
+  // =========================================================================
+  public getNotifications(): GenesisNotification[] {
+    return this.dataService.getNotifications();
+  }
+
+  public markNotificationRead(id: string): boolean {
+    return this.dataService.markNotificationRead(id);
+  }
+
+  public acknowledgeNotification(id: string): boolean {
+    return this.dataService.acknowledgeNotification(id);
+  }
+
+  // =========================================================================
+  // SCENARIO TEST RUNNER (TESTS 1 to 6)
+  // =========================================================================
+  public runAllScenarios(): ScenarioTestResult[] {
+    const runner = new GenesisScenarioRunner(this);
+    return runner.runAllScenarios();
+  }
+
+  public runScenario(id: number): ScenarioTestResult {
+    const runner = new GenesisScenarioRunner(this);
+    switch (id) {
+      case 1:
+        return runner.runScenario1();
+      case 2:
+        return runner.runScenario2();
+      case 3:
+        return runner.runScenario3();
+      case 4:
+        return runner.runScenario4();
+      case 5:
+        return runner.runScenario5();
+      case 6:
+        return runner.runScenario6();
+      default:
+        throw new Error(`Invalid scenario id: ${id}`);
+    }
+  }
+
+  // ===========================
