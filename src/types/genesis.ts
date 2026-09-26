@@ -85,7 +85,13 @@ export type EventType =
   | 'MISSION_CANCELLED'
   | 'INTER_AGENT_COMMUNICATION'
   | 'PERMISSION_MODIFIED'
-  | 'SECURITY_ALERT';
+  | 'SECURITY_ALERT'
+  // AI Provider Gateway events (Genesis Core remains the sole authority;
+  // these only trace calls to interchangeable AI capabilities).
+  | 'AI_REQUEST_SENT'
+  | 'AI_RESPONSE_RECEIVED'
+  | 'AI_PROVIDER_FALLBACK'
+  | 'AI_TOOL_CALL_BLOCKED';
 
 export interface AgentActivityRecord {
   id: string;
@@ -235,6 +241,21 @@ export interface Mission {
     identifiedTargets: Array<{ name: string; relevance: string; category: string }>;
     riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
     commercialRecommendation: string;
+    /**
+     * Optional advisory enrichment from the AI Provider Gateway (section 3:
+     * "Une IA peut proposer ou produire une réponse. Genesis Core décide ce
+     * qui peut être exécuté."). Never a source of truth on its own —
+     * provenance is always ESTIMATED, never auto-confirmed.
+     */
+    aiAdvisory?: {
+      provider: string;
+      model: string;
+      text: string;
+      simulated: boolean;
+      requestId: string;
+      warnings: string[];
+      provenance: 'ESTIMATED';
+    };
   };
   requestedAction?: ProposedAction;
   requiredPermission?: Permission;
@@ -289,6 +310,23 @@ export interface AgentRecommendation {
   reasons: string[];
   isAuthorized: boolean;
   currentWorkload: number;
+}
+
+/**
+ * GENESIS AI PROVIDER GATEWAY v0.1 — frontend-facing, key-free provider
+ * status shape (mirrors backend/core/ai/aiTypes.ts ProviderInfo). Kept as a
+ * separate, minimal declaration so the frontend bundle never imports
+ * backend-only adapter code or provider SDKs.
+ */
+export interface AIProviderStatusView {
+  providerId: 'gemini' | 'claude' | 'openai' | 'simulated';
+  name: string;
+  status: 'AVAILABLE' | 'NOT_CONFIGURED' | 'UNAVAILABLE' | 'DISABLED' | 'SIMULATED';
+  models: string[];
+  capabilities: string[];
+  simulationMode: boolean;
+  lastCheckedAt: string;
+  restrictions: string[];
 }
 
 export interface ScenarioTestResult {
